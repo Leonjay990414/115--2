@@ -1,7 +1,7 @@
 {
-  "name": "智光商工 115學年度 第62屆校慶園遊會 客製商品旗艦商城",
-  "short_name": "ZG創客商城",
-  "description": "智光商工第62屆校慶客製化商品官方預訂平台。支援 1080P 圖檔驗證、智慧拆單與產線對接。",
+  "name": "智光商工 115學年度 第62屆校慶園遊會 客製商品旗艦商城 (後台系統)",
+  "short_name": "ZG後台系統",
+  "description": "智光商工第62屆校慶客製化商品官方後台管理與產線審核系統。支援 1080P 圖檔驗證、智慧拆單與產線對接。",
   "start_url": "./index.html",
   "display": "standalone",
   "orientation": "portrait",

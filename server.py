@@ -1,13 +1,31 @@
+# -*- coding: utf-8 -*-
+"""
+智光商工 115學年度 第62屆校慶園遊會客製專案
+後台核心伺服器 (Integrated Backend Server & Cross-Device Sync Engine)
+位置：index/server.py
+"""
+
 import os
 import sys
 import json
 import time
+import socket
 from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.parse
+import argparse
 
-PORT = 8080
-DB_FILE = os.path.join(os.path.dirname(__file__), 'data', 'db.json')
+# 確保 Windows 控制台輸出支援 UTF-8 編碼，避免 CP950 UnicodeEncodeError
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(BASE_DIR)
+DB_FILE = os.path.join(BASE_DIR, 'data', 'db.json')
 
 def get_now_str():
     now = datetime.now()
@@ -199,13 +217,41 @@ DEFAULT_ORDERS = [
     }
 ]
 
+DEFAULT_SITE_SETTINGS = {
+    "siteTitle": "智光商工 115學年度 第62屆校慶園遊會",
+    "storeBrand": "智光創客商城",
+    "bannerSlogan": "✨ 2026 可愛精品亮晶晶 · 青春限定印製",
+    "marqueeNotice": "📢 校慶客製化商品全面開放線上預訂！圖檔自動驗證 1080P，滿額直送班級教室。",
+    "colorPrimary": "#12636b",
+    "colorAccent": "#ff6584",
+    "colorBg": "#fbf9f5",
+    "colorText": "#1b2e35",
+    "enableMotion": True,
+    "enableBlur": True,
+    "marqueeSpeed": "normal"
+}
+
 def load_db():
     if not os.path.exists(DB_FILE):
+        # 嘗試從外層目錄複製既有 db.json
+        parent_db = os.path.join(PARENT_DIR, 'data', 'db.json')
+        if os.path.exists(parent_db):
+            try:
+                with open(parent_db, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                data.setdefault('site_settings', DEFAULT_SITE_SETTINGS)
+                data.setdefault('staff_auth', data.get('adminAuth', {}))
+                save_db(data)
+                return data
+            except Exception:
+                pass
+
         os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
         init_data = {
             "students": DEFAULT_STUDENTS,
             "orders": DEFAULT_ORDERS,
             "products": DEFAULT_PRODUCTS,
+            "site_settings": DEFAULT_SITE_SETTINGS,
             "adminAuth": {
                 "admin_director": "ZgShop@2026_01",
                 "admin_exec_deputy": "ZgShop@2026_02",
@@ -220,8 +266,22 @@ def load_db():
                 "admin_logistics_staff": "ZgShop@2026_11",
                 "admin_marketing_core": "ZgShop@2026_12"
             },
+            "staff_auth": {
+                "admin_director": "ZgShop@2026_01",
+                "admin_exec_deputy": "ZgShop@2026_02",
+                "admin_web_core": "ZgShop@2026_03",
+                "admin_art_core": "ZgShop@2026_04",
+                "admin_art_staff": "ZgShop@2026_05",
+                "admin_maker_core": "ZgShop@2026_06",
+                "admin_maker_staff": "ZgShop@2026_07",
+                "admin_finance_core": "ZgShop@2026_08",
+                "admin_finance_staff": "ZgShop@2026_09",
+                "admin_logistics_core": "ZgShop@2026_10",
+                "admin_logistics_staff": "ZgShop@2026_11",
+                "admin_marketing_core": "ZgShop@2026_12"
+            },
             "logs": [
-                { "time": get_now_str(), "action": "【系統重啟】雲端統一資料庫引擎成功初始化，跨裝置即時同步已啟動。" }
+                { "time": get_now_str(), "action": "【後台啟動】智光創客中央資料庫引擎成功初始化，跨裝置即時同步已啟動。" }
             ],
             "slipCounter": 6
         }
@@ -230,10 +290,20 @@ def load_db():
 
     try:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            updated = False
+            if 'site_settings' not in data:
+                data['site_settings'] = DEFAULT_SITE_SETTINGS
+                updated = True
+            if 'staff_auth' not in data:
+                data['staff_auth'] = data.get('adminAuth', {})
+                updated = True
+            if updated:
+                save_db(data)
+            return data
     except Exception as e:
         print(f"Error loading {DB_FILE}: {e}")
-        return {"students": DEFAULT_STUDENTS, "orders": DEFAULT_ORDERS, "products": DEFAULT_PRODUCTS, "logs": [], "slipCounter": 6}
+        return {"students": DEFAULT_STUDENTS, "orders": DEFAULT_ORDERS, "products": DEFAULT_PRODUCTS, "site_settings": DEFAULT_SITE_SETTINGS, "logs": [], "slipCounter": 6}
 
 def save_db(data):
     try:
@@ -249,6 +319,9 @@ def save_db(data):
         print(f"Error saving {DB_FILE}: {e}")
 
 class ZgShopRequestHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=BASE_DIR, **kwargs)
+
     def address_string(self):
         # 覆寫反向 DNS 查詢，避免 Windows 系統連線時發生 10~30 秒 DNS 逾時卡頓
         return str(self.client_address[0])
@@ -266,6 +339,20 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    def translate_path(self, path):
+        clean_path = urllib.parse.unquote(path.split('?', 1)[0].split('#', 1)[0])
+        # 快捷存取：/store 或 /shop 直接導向後台目錄下的 store.html 商城頁面
+        if clean_path in ('/store', '/store/', '/shop', '/shop/'):
+            return os.path.join(BASE_DIR, 'store.html')
+        # 快捷存取：/admin 直接導向 index.html 後台管理頁面
+        elif clean_path in ('/admin', '/admin/'):
+            return os.path.join(BASE_DIR, 'index.html')
+        # 存取外層根目錄專案檔案 (/front/ 路由)
+        elif clean_path.startswith('/front/') or clean_path == '/front':
+            sub = clean_path[len('/front'):].lstrip('/')
+            return os.path.join(PARENT_DIR, sub if sub else 'index.html')
+        return super().translate_path(path)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == '/api/db':
@@ -277,6 +364,7 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(resp)
             return
+
         elif parsed.path == '/api/orders/image':
             query = urllib.parse.parse_qs(parsed.query)
             order_id = query.get('id', [''])[0]
@@ -307,7 +395,7 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
                 self.send_header('Location', clean_path)
                 self.end_headers()
                 return
-        
+
         super().do_GET()
 
     def do_POST(self):
@@ -321,17 +409,14 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
             req_data = {}
 
         if parsed.path == '/api/sync':
-            # 跨裝置整包資料合併與儲存
             db = load_db()
             if 'students' in req_data and isinstance(req_data['students'], list):
-                # 依據 studentId 合併學生名冊
                 existing_map = {s['studentId']: s for s in db.get('students', [])}
                 for s in req_data['students']:
                     existing_map[s['studentId']] = s
                 db['students'] = list(existing_map.values())
 
             if 'orders' in req_data and isinstance(req_data['orders'], list):
-                # 依據 id 合併工單
                 order_map = {o['id']: o for o in db.get('orders', [])}
                 for o in req_data['orders']:
                     order_map[o['id']] = o
@@ -340,12 +425,26 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
             if 'products' in req_data and isinstance(req_data['products'], list):
                 db['products'] = req_data['products']
 
+            if 'adminAuth' in req_data and isinstance(req_data['adminAuth'], dict):
+                if 'adminAuth' not in db:
+                    db['adminAuth'] = {}
+                db['adminAuth'].update(req_data['adminAuth'])
+
+            if 'staff_auth' in req_data and isinstance(req_data['staff_auth'], dict):
+                if 'staff_auth' not in db:
+                    db['staff_auth'] = {}
+                db['staff_auth'].update(req_data['staff_auth'])
+
+            if 'site_settings' in req_data and isinstance(req_data['site_settings'], dict):
+                if 'site_settings' not in db:
+                    db['site_settings'] = {}
+                db['site_settings'].update(req_data['site_settings'])
+
             if 'slipCounter' in req_data:
                 db['slipCounter'] = max(int(db.get('slipCounter', 6)), int(req_data['slipCounter']))
 
             if 'logs' in req_data and isinstance(req_data['logs'], list):
-                # 合併日誌
-                existing_actions = {l['time'] + l['action'] for l in db.get('logs', [])}
+                existing_actions = {l.get('time', '') + l.get('action', '') for l in db.get('logs', [])}
                 for l in req_data['logs']:
                     key = l.get('time', '') + l.get('action', '')
                     if key not in existing_actions:
@@ -354,6 +453,39 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
 
             save_db(db)
             self._send_json({"success": True, "db": db})
+            return
+
+        elif parsed.path == '/api/staff/update':
+            db = load_db()
+            username = str(req_data.get('username', '')).strip()
+            new_code = str(req_data.get('code', '')).strip()
+            if not username or not new_code:
+                self._send_json({"success": False, "message": "帳號與驗證碼不能為空"}, status=400)
+                return
+            if 'adminAuth' not in db: db['adminAuth'] = {}
+            if 'staff_auth' not in db: db['staff_auth'] = {}
+            db['adminAuth'][username] = new_code
+            db['staff_auth'][username] = new_code
+            db['logs'].insert(0, {
+                "time": get_now_str(),
+                "action": f"【專員驗證碼異動】工作人員職位 [{username}] 驗證碼/學號已成功更新並持久化儲存。"
+            })
+            save_db(db)
+            self._send_json({"success": True, "username": username, "code": new_code, "db": db})
+            return
+
+        elif parsed.path == '/api/settings/update':
+            db = load_db()
+            settings = req_data.get('settings', {})
+            if 'site_settings' not in db:
+                db['site_settings'] = {}
+            db['site_settings'].update(settings)
+            db['logs'].insert(0, {
+                "time": get_now_str(),
+                "action": "【全站外觀設定更新】管理員已調整網站標題、配色與動態視覺效果。"
+            })
+            save_db(db)
+            self._send_json({"success": True, "site_settings": db['site_settings']})
             return
 
         elif parsed.path == '/api/students/upsert':
@@ -372,7 +504,6 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
 
             students = db.get('students', [])
 
-            # 嚴格約束：同一個班級只能有一個特定座號，不可被不同學號佔用
             for s in students:
                 if s.get('studentId') != student_id and s.get('className', '').lower() == class_name.lower():
                     s_seat = str(int(s.get('seatNo', 0))) if str(s.get('seatNo', '')).isdigit() else str(s.get('seatNo', ''))
@@ -383,7 +514,6 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
                         })
                         return
 
-            # 搜尋現有學號
             idx = next((i for i, s in enumerate(students) if s.get('studentId') == student_id), -1)
             if idx != -1:
                 students[idx].update({
@@ -442,13 +572,63 @@ class ZgShopRequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp)
 
-if __name__ == '__main__':
+def get_lan_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+def start_server(port=8080):
     load_db()
-    server_address = ('0.0.0.0', PORT)
-    httpd = ThreadingHTTPServer(server_address, ZgShopRequestHandler)
-    print(f"ZG Shop Cross-Device Sync Server running on http://0.0.0.0:{PORT}...")
+    
+    # 若請求埠號已被佔用，自動嘗試遞增埠號
+    active_port = port
+    max_tries = 20
+    httpd = None
+
+    for attempt in range(max_tries):
+        try:
+            server_address = ('0.0.0.0', active_port)
+            httpd = ThreadingHTTPServer(server_address, ZgShopRequestHandler)
+            break
+        except OSError as e:
+            if e.errno in (98, 10048): # Address already in use
+                print(f"⚠️ 埠號 {active_port} 已被其他程序佔用，自動嘗試下一個可用埠號 {active_port + 1}...")
+                active_port += 1
+            else:
+                raise e
+
+    if not httpd:
+        print(f"❌ 無法在埠號 {port} ~ {port + max_tries} 啟動伺服器！")
+        sys.exit(1)
+
+    lan_ip = get_lan_ip()
+
+    print("\n" + "=" * 72)
+    print("🚀 智光商工 62週年校慶 後台整合管理伺服器 (ZG Shop Backend Server)")
+    print("=" * 72)
+    print(f"📍 本機後台首頁 (Admin Dashboard): http://localhost:{active_port}/index.html")
+    print(f"📱 區網/手機後台 (LAN IP):         http://{lan_ip}:{active_port}/index.html")
+    print(f"🛍️ 前台顧客商城 (Storefront):     http://localhost:{active_port}/front/index.html")
+    print(f"📡 即時中央資料庫 API:             http://localhost:{active_port}/api/db")
+    print(f"🔄 跨裝置資料同步 API:             http://localhost:{active_port}/api/sync")
+    print(f"📂 後台根目錄:                     {BASE_DIR}")
+    print(f"💾 資料庫檔案:                     {DB_FILE}")
+    print("=" * 72)
+    print("💡 按下 Ctrl + C 可安全停止伺服器\n")
     sys.stdout.flush()
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        pass
+        print("\n🛑 伺服器已安全停止。")
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="ZG Shop 62nd Anniversary Backend Server")
+    parser.add_argument('-p', '--port', type=int, default=8080, help="Server port (default: 8080)")
+    args = parser.parse_args()
+    start_server(args.port)

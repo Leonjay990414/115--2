@@ -234,5 +234,32 @@
       "action": "【系統重啟】雲端統一資料庫引擎成功初始化，跨裝置即時同步已啟動。"
     }
   ],
-  "slipCounter": 6
+  "slipCounter": 6,
+  "site_settings": {
+    "siteTitle": "智光商工 115學年度 第62屆校慶園遊會",
+    "storeBrand": "智光創客商城",
+    "bannerSlogan": "✨ 2026 可愛精品亮晶晶 · 青春限定印製",
+    "marqueeNotice": "📢 校慶客製化商品全面開放線上預訂！圖檔自動驗證 1080P，滿額直送班級教室。",
+    "colorPrimary": "#12636b",
+    "colorAccent": "#ff6584",
+    "colorBg": "#fbf9f5",
+    "colorText": "#1b2e35",
+    "enableMotion": true,
+    "enableBlur": true,
+    "marqueeSpeed": "normal"
+  },
+  "staff_auth": {
+    "admin_director": "ZgShop@2026_01",
+    "admin_exec_deputy": "ZgShop@2026_02",
+    "admin_web_core": "ZgShop@2026_03",
+    "admin_art_core": "ZgShop@2026_04",
+    "admin_art_staff": "ZgShop@2026_05",
+    "admin_maker_core": "ZgShop@2026_06",
+    "admin_maker_staff": "ZgShop@2026_07",
+    "admin_finance_core": "ZgShop@2026_08",
+    "admin_finance_staff": "ZgShop@2026_09",
+    "admin_logistics_core": "ZgShop@2026_10",
+    "admin_logistics_staff": "ZgShop@2026_11",
+    "admin_marketing_core": "ZgShop@2026_12"
+  }
 }

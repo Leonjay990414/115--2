@@ -1,8 +1,8 @@
-const CACHE_NAME = 'zg-shop-cache-v1';
+const CACHE_NAME = 'zg-shop-backend-cache-v1';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
-  './admin.html',
+  './store.html',
   './css/styles.css',
   './css/print.css',
   './js/data.js',
@@ -48,8 +48,25 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   // 網路優先，離線回退至快取策略
   event.respondWith(
-    fetch(event.request).catch(() => {
-      return caches.match(event.request);
-    })
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && event.request.method === 'GET') {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return networkResponse;
+      })
+      .catch(() => {
+        return caches.match(event.request).then((cachedResponse) => {
+          if (cachedResponse) {
+            return cachedResponse;
+          }
+          if (event.request.headers.get('accept').includes('text/html')) {
+            return caches.match('./index.html');
+          }
+        });
+      })
   );
 });

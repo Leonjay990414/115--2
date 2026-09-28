@@ -1,3 +1,15 @@
+// 初始化 Supabase 雲端連線組態 (避免與 CDN 全域 window.supabase 變數衝突)
+var zgSupabaseClient = null;
+try {
+  if (typeof window !== "undefined" && window.supabase && typeof window.supabase.createClient === "function") {
+    zgSupabaseClient = window.supabase.createClient(
+      'https://pdycpmbvjmhxabnzzdld.supabase.co',
+      'sb_publishable_1Z-6ijop728MxaiXhZGTCQ_LWfdWrrY'
+    );
+  }
+} catch (e) {
+  console.warn("[Supabase] 初始化警示：", e);
+}
 /**
  * 智光商工 115學年度 第62屆校慶園遊會 - 前端商城業務邏輯 (Customer Storefront)
  * 涵蓋：6大必填個資、圖檔 1080P 檢驗、購物車側邊欄、雙重確認結帳、品項自動拆單與訂單查詢
@@ -8,15 +20,91 @@ let currentStudent = null;
 let cart = [];
 let currentUploadData = null; // 暫存上傳圖檔資訊 (dataUrl, width, height, is1080p)
 let selectedProductId = null;
+let currentCategoryFilter = "all";
+let selectedDetailProductId = null;
 
-// 初始化
-document.addEventListener("DOMContentLoaded", () => {
-  initStudentAuth();
-  loadCart();
-  renderProducts();
-  setupEventListeners();
-  updateCartBadge();
-});
+// 初始化防禦（無論是 DOMContentLoaded 觸發或已載入完成均能立即渲染，且任一步驟異常均不阻斷其他模組）
+function initStoreApp() {
+  try { initStudentAuth(); } catch (e) { console.error("initStudentAuth failed:", e); }
+  try { loadCart(); } catch (e) { console.error("loadCart failed:", e); }
+  try { checkRestockArrivalNotice(); } catch (e) { console.error("checkRestockArrivalNotice failed:", e); }
+  try { renderProducts(); } catch (e) { console.error("renderProducts failed:", e); }
+  try { setupEventListeners(); } catch (e) { console.error("setupEventListeners failed:", e); }
+  try { updateCartBadge(); } catch (e) { console.error("updateCartBadge failed:", e); }
+  try { initIosMicroInteractions(); } catch (e) { console.error("initIosMicroInteractions failed:", e); }
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initStoreApp);
+} else {
+  initStoreApp();
+}
+
+window.refreshStoreViews = () => {
+  try { renderProducts(); } catch (e) { }
+  try { updateStudentUI(); } catch (e) { }
+  try { updateCartBadge(); } catch (e) { }
+  try { checkRestockArrivalNotice(); } catch (e) { }
+};
+
+// 檢查購物車內先前「補貨預約中」的商品是否已完成到貨，若到貨則彈出正式通知並解鎖下單
+function checkRestockArrivalNotice() {
+  if (!cart || cart.length === 0) return;
+  const newlyRestockedItems = [];
+  let cartChanged = false;
+
+  cart.forEach(item => {
+    if (item.isRestocking) {
+      const prod = ZgDataManager.getProductById(item.productId);
+      if (prod && prod.stockStatus === "in_stock") {
+        item.isRestocking = false;
+        cartChanged = true;
+        newlyRestockedItems.push(item);
+      }
+    }
+  });
+
+  if (cartChanged) {
+    saveCart();
+    updateCartUI();
+  }
+
+  if (newlyRestockedItems.length > 0) {
+    setTimeout(() => {
+      showRestockArrivalModal(newlyRestockedItems);
+    }, 450);
+  }
+}
+
+function showRestockArrivalModal(items) {
+  const modal = document.getElementById("modal-restock-arrival");
+  const listEl = document.getElementById("restock-arrival-items-list");
+  if (listEl) {
+    listEl.innerHTML = items.map(item => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(0,0,0,0.06);">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <img src="${item.imageUrl || ''}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:1px solid var(--border-subtle);background:#ffffff;">
+          <div>
+            <strong style="color:var(--text-primary);font-size:0.92rem;">${item.name}</strong>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:2px;">預約數量：${item.quantity} 件 · 總計 NT$ ${item.price * item.quantity}</div>
+          </div>
+        </div>
+        <span style="background:rgba(16,185,129,0.15);color:#059669;border:1px solid rgba(16,185,129,0.3);padding:3px 12px;border-radius:9999px;font-size:0.75rem;font-weight:800;">🟢 已補貨到貨</span>
+      </div>
+    `).join("");
+  }
+  if (modal) {
+    openModal(modal);
+  }
+  showToast(`🎉 到貨通知：您預約的商品已補貨到貨！已為您自動解鎖，現在可以正式下單結帳了！`, "success", 7000);
+}
+
+function handleGoToCartAfterRestock() {
+  const modal = document.getElementById("modal-restock-arrival");
+  if (modal) closeModal(modal);
+  openCartDrawer();
+}
+
 
 // 1. 醒目 Toast 通知橫幅 (精確回報錯誤與狀態)
 function showToast(message, type = "success", duration = 4000) {
@@ -25,11 +113,11 @@ function showToast(message, type = "success", duration = 4000) {
 
   const toast = document.createElement("div");
   toast.className = `toast toast-${type}`;
-  
+
   let icon = "✓";
   if (type === "error") icon = "✕ 錯誤：";
   else if (type === "warning") icon = "⚠ 提醒：";
-  
+
   toast.innerHTML = `<span style="font-size:1.1rem;font-weight:900;">${icon}</span><span>${message}</span>`;
   container.appendChild(toast);
 
@@ -87,6 +175,22 @@ function openStudentAuthModal() {
     switchAuthTab("login");
   }
   openModal(modal);
+}
+
+function closeStudentAuthModal() {
+  const modal = document.getElementById("modal-student-auth");
+  if (modal) closeModal(modal);
+}
+
+function openStudentProfileModal() {
+  const modal = document.getElementById("modal-student-auth");
+  switchAuthTab("profile");
+  populateStudentProfile();
+  if (modal) openModal(modal);
+}
+
+function closeStudentProfileModal() {
+  closeStudentAuthModal();
 }
 
 function switchAuthTab(tab) {
@@ -176,17 +280,51 @@ function handleStudentLogout() {
   showToast("您已安全登出學生會員帳號。", "info");
 }
 
-function handleStudentLogin(event) {
+async function handleStudentLogin(event) {
   if (event) event.preventDefault();
   const inputEl = document.getElementById("login-student-id");
   if (!inputEl) return;
   const studentId = inputEl.value.trim();
 
-  if (!studentId) {
-    return showToast("請輸入學生學號！", "error");
+  if (!studentId || !/^\d{6}$/.test(studentId)) {
+    return showToast("請輸入完整的 6 碼學生學號（例如：112001）！", "error");
   }
 
-  const result = ZgDataManager.loginStudent(studentId);
+  // 1. 本地快速檢查
+  let result = ZgDataManager.loginStudent(studentId);
+
+  // 2. 若本地無此學號（例如在手機端首次開啟），向 Supabase 雲端資料庫檢索學生名冊
+  if (!result.success && zgSupabaseClient) {
+    try {
+      const { data: cloudStudents, error } = await zgSupabaseClient
+        .from('students')
+        .select('*')
+        .eq('student_id', studentId)
+        .limit(1);
+
+      if (!error && cloudStudents && cloudStudents.length > 0) {
+        const cs = cloudStudents[0];
+        const studentObj = {
+          studentId: cs.student_id,
+          name: cs.name,
+          className: cs.class_name,
+          seatNo: String(cs.seat_no),
+          gender: cs.gender || "未指定",
+          phone: cs.phone || "",
+          registeredAt: cs.created_at || getTaiwanNowString()
+        };
+        // 寫入手機本地
+        const students = ZgDataManager.getStudents();
+        students.push(studentObj);
+        ZgDataManager.saveStudents(students);
+        ZgDataManager.saveCurrentUser(studentObj);
+        result = { success: true, student: studentObj };
+      }
+    } catch (e) {
+      console.warn("Supabase 學生雲端登入檢索失敗：", e);
+    }
+  }
+
   if (result.success) {
     currentStudent = result.student;
     updateStudentUI();
@@ -197,7 +335,7 @@ function handleStudentLogin(event) {
   }
 }
 
-function handleStudentRegister(event) {
+async function handleStudentRegister(event) {
   if (event) event.preventDefault();
   const studentId = document.getElementById("reg-student-id").value.trim();
   const name = document.getElementById("reg-student-name").value.trim();
@@ -206,11 +344,11 @@ function handleStudentRegister(event) {
   const gender = document.getElementById("reg-student-gender").value;
   const phone = document.getElementById("reg-student-phone").value.trim();
 
-  if (!studentId || studentId.length < 4) {
-    return showToast("請輸入完整的學號（至少4碼）", "error");
+  if (!studentId || !/^\d{6}$/.test(studentId)) {
+    return showToast("請輸入完整的 6 碼學生學號（例如：112001）", "error");
   }
   if (!className) {
-    return showToast("請填寫科系加班級（如：資處科三1、廣設科二1）", "error");
+    return showToast("請填寫班級（格式：科系+班級，例如：資處科一仁、廣設科二信甲）", "error");
   }
   const parsedSeat = parseInt(seatNo, 10);
   if (!seatNo || isNaN(parsedSeat) || parsedSeat < 1 || parsedSeat > 65) {
@@ -235,6 +373,25 @@ function handleStudentRegister(event) {
   if (result.success) {
     currentStudent = result.student;
     updateStudentUI();
+
+    // 跨裝置同步至 Supabase 雲端資料庫
+    if (zgSupabaseClient) {
+      try {
+        await zgSupabaseClient.from('students').upsert([
+          {
+            student_id: studentId,
+            name: name,
+            class_name: className,
+            seat_no: parsedSeat,
+            gender: gender || "不方便透露",
+            phone: phone
+          }
+        ], { onConflict: 'student_id' });
+      } catch (cloudErr) {
+        console.warn("Supabase 學生雲端同步：", cloudErr);
+      }
+    }
+
     closeModal(document.getElementById("modal-student-auth"));
     showToast(`✨ 註冊成功！歡迎 ${className} ${name} 同學！`, "success");
   } else {
@@ -248,6 +405,12 @@ function handleStudentRegister(event) {
 let pendingNoticeProductId = null;
 
 function promptPreOrderNotice(productId) {
+  const prod = ZgDataManager.getProductById(productId);
+  if (prod && prod.stockStatus === "out_of_stock") {
+    alert(`【${prod.name}】目前暫時缺貨（已搶光），暫停客製接單！請待下一批物料到貨。`);
+    return showToast(`【${prod.name}】目前暫時缺貨中，無法進行客製下單！`, "warning");
+  }
+
   pendingNoticeProductId = productId;
   const modal = document.getElementById("modal-pre-order-notice");
   const chk = document.getElementById("check-agree-notice");
@@ -274,10 +437,6 @@ function confirmNoticeAndOpenStudio() {
     openCustomStudio(pendingNoticeProductId);
   }
 }
-
-let currentCategoryFilter = "all";
-
-let selectedDetailProductId = null;
 
 function handleCategoryDropdownChange(category) {
   currentCategoryFilter = category;
@@ -325,12 +484,12 @@ function openProductDetailModal(productId) {
         btnProceed.innerHTML = `<span>✨ 立即客製選購 ➔</span>`;
       }
     } else if (status === "restocking") {
-      stockEl.innerHTML = `<span class="stock-pill restocking">🟡 機台排程補貨中</span>`;
+      stockEl.innerHTML = `<span class="stock-pill restocking">🟡 補貨中 · 支援預約</span>`;
       if (btnProceed) {
         btnProceed.disabled = false;
         btnProceed.style.opacity = "1";
         btnProceed.style.cursor = "pointer";
-        btnProceed.innerHTML = `<span>✨ 預約客製排單 ➔</span>`;
+        btnProceed.innerHTML = `<span>🟡 預約到購物車 (到貨通知) ➔</span>`;
       }
     } else {
       stockEl.innerHTML = `<span class="stock-pill out_of_stock">🔴 暫時缺貨 (已搶光)</span>`;
@@ -404,18 +563,20 @@ function renderProducts() {
 
     if (stockStatus === "in_stock") {
       stockBadgeHtml = `<span class="stock-pill in_stock">🟢 現貨熱銷中</span>`;
-      btnHtml = `<button class="btn btn-primary" onclick="event.stopPropagation(); promptPreOrderNotice('${prod.id}')" style="background:linear-gradient(135deg, #ff6584, #f59e0b);border:none;"><span>✨ 立即客製選購</span></button>`;
+      btnHtml = `<button class="btn btn-primary" onclick="event.stopPropagation(); promptPreOrderNotice('${prod.id}')"><span>✨ 立即客製選購</span></button>`;
     } else if (stockStatus === "restocking") {
-      stockBadgeHtml = `<span class="stock-pill restocking">🟡 機台排程補貨中</span>`;
-      btnHtml = `<button class="btn btn-secondary" onclick="event.stopPropagation(); promptPreOrderNotice('${prod.id}')"><span>✨ 預約客製排單</span></button>`;
+      stockBadgeHtml = `<span class="stock-pill restocking">🟡 補貨中 · 支援預約</span>`;
+      btnHtml = `<button class="btn btn-secondary" onclick="event.stopPropagation(); promptPreOrderNotice('${prod.id}')"><span>🟡 預約到購物車 (到貨通知)</span></button>`;
     } else {
       stockBadgeHtml = `<span class="stock-pill out_of_stock">🔴 暫時缺貨 (已搶光)</span>`;
       btnHtml = `<button class="btn btn-secondary" disabled style="opacity:0.6;cursor:not-allowed;"><span>✕ 已售罄 (暫停接單)</span></button>`;
     }
 
+    const isOutOfStock = stockStatus === "out_of_stock";
+
     return `
-      <div class="product-card" data-id="${prod.id}" onclick="openProductDetailModal('${prod.id}')" style="cursor:pointer;" title="點擊檢視【${prod.name}】商品簡介與直徑尺寸規格">
-        <span class="product-card-badge" style="background:linear-gradient(135deg, #ff758c, #f59e0b);">${prod.badge || "人氣限定"}</span>
+      <div class="product-card ${isOutOfStock ? 'is-out-of-stock' : ''}" data-id="${prod.id}" onclick="openProductDetailModal('${prod.id}')" style="cursor:pointer;" title="點擊檢視【${prod.name}】商品簡介與直徑尺寸規格">
+        <span class="product-card-badge">${prod.badge || "人氣限定"}</span>
         <button class="wishlist-heart-btn ${isWishlisted ? 'is-active' : ''}" onclick="toggleWishlistItem(event, '${prod.id}')" title="${isWishlisted ? '已加入願望清單' : '加入願望清單'}">
           <svg viewBox="0 0 24 24"><path class="heart-svg-path" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
         </button>
@@ -435,8 +596,8 @@ function renderProducts() {
           </div>
           <div class="product-price-row">
             <div>
-              <span class="product-price-currency" style="color:#e11d48;">NT$</span>
-              <span class="product-price-amount" style="color:#e11d48;">${prod.price}</span>
+              <span class="product-price-currency">NT$</span>
+              <span class="product-price-amount">${prod.price}</span>
             </div>
             ${btnHtml}
           </div>
@@ -444,6 +605,11 @@ function renderProducts() {
       </div>
     `;
   }).join("");
+}
+
+function handleCategoryDropdownChange(cat) {
+  currentCategoryFilter = cat || "all";
+  renderProducts();
 }
 
 // ❤️ 收藏 / 願望清單心型彈跳微互動 (Heart Bounce & Spring Physics)
@@ -474,7 +640,7 @@ function toggleWishlistItem(event, productId) {
     }
     showToast(`❤️ 已將【${prodName}】加入願望清單！`, "success", 2500);
     if (navigator.vibrate) {
-      try { navigator.vibrate([15, 30, 20]); } catch (e) {}
+      try { navigator.vibrate([15, 30, 20]); } catch (e) { }
     }
   } else {
     wishlistIds.splice(index, 1);
@@ -526,7 +692,7 @@ function playFlyToCartAnimation(imgSrc) {
       if (islandBadge) islandBadge.classList.add("cart-bump-active");
 
       if (navigator.vibrate) {
-        try { navigator.vibrate(25); } catch (e) {}
+        try { navigator.vibrate(25); } catch (e) { }
       }
 
       setTimeout(() => {
@@ -597,6 +763,19 @@ function openCustomStudio(productId) {
   // 更新麵包屑
   const crumb = document.getElementById("crumb-product");
   if (crumb) crumb.textContent = prod.name;
+
+  // 根據庫存狀態調整工作室按鈕
+  const addToCartBtn = document.getElementById("btn-add-to-cart");
+  const isRestock = (prod.stockStatus === "restocking");
+  if (addToCartBtn) {
+    if (isRestock) {
+      addToCartBtn.innerHTML = `<span>🟡 預約加入購物車 (到貨通知)</span>`;
+      addToCartBtn.className = "btn btn-secondary";
+    } else {
+      addToCartBtn.innerHTML = `<span>✨ 確認客製並加入購物車</span>`;
+      addToCartBtn.className = "btn btn-primary";
+    }
+  }
 
   // 成功開啟客製化工作室 Modal
   const studioModal = document.getElementById("modal-custom-studio");
@@ -734,6 +913,8 @@ function addToCartFromStudio() {
   const studioModal = document.getElementById("modal-custom-studio");
   if (studioModal) closeModal(studioModal);
 
+  const isRestocking = (prod.stockStatus === "restocking");
+
   cart.push({
     id: "cart_" + Date.now(),
     productId: prod.id,
@@ -745,7 +926,8 @@ function addToCartFromStudio() {
     imageRes: currentUploadData.resText,
     notes: notes,
     paletteVibe: selectedPaletteVibe,
-    stampStyle: stampStyle
+    stampStyle: stampStyle,
+    isRestocking: isRestocking
   });
 
   saveCart();
@@ -755,8 +937,12 @@ function addToCartFromStudio() {
   // 🚀 像 Instagram 一樣靈動的加入購物車拋物線粒子動畫 (Fly-to-Cart Animation)
   playFlyToCartAnimation(currentUploadData.dataUrl || prod.image);
 
-  showToast(`✨ 已成功將【${prod.name}】× ${qty} 加入購物車！`, "success");
-  
+  if (isRestocking) {
+    showToast(`🟡 已成功預約【${prod.name}】至購物車！目前產線補貨中，待到貨後再次造訪將會主動通知您解鎖下單！`, "warning", 6000);
+  } else {
+    showToast(`✨ 已成功將【${prod.name}】× ${qty} 加入購物車！`, "success");
+  }
+
   // 延遲 420ms 後滑出購物車側邊抽屜，讓使用者先看見極致流暢的拋物線軌跡！
   setTimeout(() => {
     openCartDrawer();
@@ -808,11 +994,17 @@ function renderCartItems() {
   container.innerHTML = cart.map((item, idx) => {
     const itemSubtotal = item.price * item.quantity;
     total += itemSubtotal;
+    const isRestock = item.isRestocking;
+    const restockBadge = isRestock 
+      ? `<div class="cart-restock-tag">🟡 補貨預約中（待到貨後解鎖送單）</div>` 
+      : '';
+
     return `
       <div class="cart-item-card">
         <img src="${item.imageUrl}" class="cart-item-thumb" alt="${item.name}">
         <div class="cart-item-info">
           <div class="cart-item-title single-line" title="${item.name}">${item.name}</div>
+          ${restockBadge}
           <div class="cart-item-note single-line" title="備註：${item.notes}">備註：${item.notes}</div>
           <div class="cart-item-price">NT$ ${item.price} × ${item.quantity} = NT$ ${itemSubtotal}</div>
         </div>
@@ -870,15 +1062,144 @@ function updateCartBadge() {
   const mobBadge = document.getElementById("mob-cart-count-badge");
   if (mobBadge) mobBadge.textContent = count;
   updateDynamicIsland();
+  updateStickyCartBar();
 }
 
-// 動態島已依照需求全面移除，保留安全空函式防止調用報錯
-function updateDynamicIsland() {}
+// iOS 靈動島 (Dynamic Island) 狀態同步
+function updateDynamicIsland() {
+  try {
+    const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
+    const totalAmount = cart.reduce((sum, item) => sum + item.totalPrice, 0);
+    
+    const countEl = document.getElementById("island-cart-count");
+    if (countEl) countEl.textContent = `${totalQty} 件`;
+    
+    const totalEl = document.getElementById("island-total-badge");
+    if (totalEl) totalEl.textContent = `NT$ ${totalAmount}`;
+    
+    const userEl = document.getElementById("island-user-status");
+    if (userEl) {
+      if (currentStudent && currentStudent.name) {
+        userEl.textContent = `👤 ${currentStudent.className} ${currentStudent.name}`;
+      } else {
+        userEl.textContent = `💖 尚未登入學生會員`;
+      }
+    }
+  } catch (e) {
+    // 安全防護
+  }
+}
+
+// 底部浮動購物列 (Sticky Add-to-Cart Bar) 即時狀態
+function updateStickyCartBar() {
+  try {
+    const bar = document.getElementById("sticky-add-to-cart-bar");
+    if (!bar) return;
+    const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
+    const totalAmount = cart.reduce((sum, item) => sum + item.totalPrice, 0);
+    const countEl = document.getElementById("sticky-cart-count");
+    const priceEl = document.getElementById("sticky-cart-price");
+
+    if (countEl) countEl.textContent = totalQty;
+    if (priceEl) priceEl.textContent = `NT$ ${totalAmount}`;
+
+    if (totalQty > 0 || window.scrollY > 300) {
+      bar.classList.remove("is-hidden");
+    } else {
+      bar.classList.add("is-hidden");
+    }
+  } catch (e) { }
+}
+
+// iOS 微互動與捲動監聽
+function initIosMicroInteractions() {
+  try {
+    window.addEventListener("scroll", () => {
+      updateStickyCartBar();
+      updateBackToTopButton();
+    }, { passive: true });
+  } catch (e) { }
+}
+
+function updateBackToTopButton() {
+  const btn = document.getElementById("btn-back-to-top");
+  if (!btn) return;
+  if (window.scrollY > 300) {
+    btn.classList.add("is-visible");
+  } else {
+    btn.classList.remove("is-visible");
+  }
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function handleMobNavCategory() {
+  const catalog = document.getElementById("catalog-section") || document.getElementById("product-grid-container");
+  if (catalog) {
+    catalog.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  document.querySelectorAll('.mob-nav-item').forEach(b => b.classList.remove('active'));
+  document.getElementById('mob-nav-category')?.classList.add('active');
+}
+
+function toggleFooterAccordion(sectionId) {
+  if (window.innerWidth > 768) return; // 僅在行動裝置啟用折疊
+  const col = document.getElementById(sectionId);
+  if (col) {
+    col.classList.toggle("is-expanded");
+  }
+}
+
+function handleNewsletterSubmit(event) {
+  if (event) event.preventDefault();
+  const input = document.getElementById("footer-newsletter-input");
+  const email = input ? input.value.trim() : "";
+  if (!email) return;
+  showToast("🎉 感謝訂閱！優惠折扣碼【ZG2026VIP】已為您啟用，結帳立折 NT$20！", "success", 6000);
+  if (input) input.value = "";
+}
+
+function handleLanguageChange(event) {
+  const lang = event?.target?.value || "zh-TW";
+  const langNames = {
+    "zh-TW": "🇹🇼 繁體中文 (台灣)",
+    "en-US": "🇺🇸 English (US)",
+    "ja-JP": "🇯🇵 日本語 (Japan)"
+  };
+  showToast(`🌐 介面語言已切換為：${langNames[lang] || lang}`, "info");
+}
+
+function handleCurrencyChange(event) {
+  const curr = event?.target?.value || "TWD";
+  showToast(`💱 結帳幣別已更新為：${curr}`, "info");
+}
+
 
 // 7. 結帳雙重確認機制 (Double Confirmation) 與核心自動拆單
 function startCheckoutProcess() {
   if (cart.length === 0) {
     return showToast("購物車為空，請先挑選商品加入購物車！", "warning");
+  }
+
+  // 補貨中商品規則：補貨中的不能下單，只能預約到購物車，待到貨通知後方可下單
+  const restockingItems = cart.filter(item => {
+    const currentProd = ZgDataManager.getProductById(item.productId);
+    if (item.isRestocking) {
+      if (currentProd && currentProd.stockStatus === "in_stock") {
+        item.isRestocking = false;
+        return false;
+      }
+      return true;
+    }
+    return currentProd && currentProd.stockStatus === "restocking";
+  });
+
+  if (restockingItems.length > 0) {
+    const names = restockingItems.map(i => `【${i.name}】`).join("、");
+    alert(`⚠️ 購物車含有排程補貨中的預約品項：${names}\n\n依規定「補貨中商品只能預約至購物車，無法立即送單結帳」！\n請待產線完成補貨（之後再開啟網站時會自動通知您到貨），屆時即可立即正式送單。\n\n💡 若您想先購買其他現貨商品，請先點擊預約品項右側的「✕」將其移出購物車。`);
+    return showToast("⚠️ 購物車含有補貨預約品項，待到貨通知後方可下單！", "warning", 6000);
   }
 
   closeCartDrawer();
@@ -986,6 +1307,9 @@ function submitFinalOrder() {
     const inputGender = document.getElementById("confirm-input-student-gender")?.value || "男";
     const inputPhone = document.getElementById("confirm-input-student-phone")?.value.trim();
 
+    if (!inputId || !/^\d{6}$/.test(inputId)) {
+      return showToast("學生學號必須為 6 碼數字（例如：112001）！", "error", 5000);
+    }
     if (!inputId || !inputName || !inputClass || !inputSeat || !inputPhone) {
       return showToast("請完整填寫 6 項學生訂購人個資（學號、姓名、班級、座號、性別、電話）！", "error", 5000);
     }
@@ -1017,10 +1341,41 @@ function submitFinalOrder() {
 
   if (btn) setButtonLoading(btn, true);
 
-  setTimeout(() => {
-    // 執行核心品項智慧自動拆單與寫入資料庫
+  // 整理購物車品項與總金額
+  const cartSummary = cart.map(item => `${item.name} × ${item.quantity}`).join(", ");
+  const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const customerName = studentProfile?.name || document.getElementById("confirm-input-student-name")?.value || "現場顧客";
+
+  (async () => {
+    // 1. 同步寫入 Supabase 雲端資料庫 orders 資料表
+    if (zgSupabaseClient) {
+      try {
+        const studentInfoStr = `${studentProfile?.className || ''} ${studentProfile?.seatNo || ''}號 ${studentProfile?.name || customerName} (${studentProfile?.studentId || ''})`;
+        const fullCustomerName = studentProfile?.studentId ? `${customerName} [${studentProfile.studentId}]` : customerName;
+        const { data, error } = await zgSupabaseClient.from('orders').insert([
+          {
+            customer_name: fullCustomerName,
+            order_items: `${cartSummary} | 班級座號: ${studentInfoStr} | 電話: ${studentProfile?.phone || ''}`,
+            total_price: Number(cartTotal),
+            status: '待處理'
+          }
+        ]);
+
+        if (error) {
+          console.error('[Supabase 雲端下單失敗]', error);
+          showToast(`雲端同步警示：${error.message}`, 'warning', 6000);
+        } else {
+          console.log('[Supabase 雲端下單成功]', data);
+          showToast('🎉 下單成功！訂單已即時同步到雲端與後台！', 'success', 5000);
+        }
+      } catch (cloudErr) {
+        console.error('[Supabase 連線異常]', cloudErr);
+      }
+    }
+
+    // 2. 執行核心品項智慧自動拆單與寫入本地資料庫 (保持原有列印與管理完全相容)
     const result = ZgDataManager.splitAndCreateOrders(cart, studentProfile);
-    
+
     // 清空購物車
     cart = [];
     saveCart();
@@ -1033,8 +1388,7 @@ function submitFinalOrder() {
 
     // 彈出訂單完成視窗
     openOrderSuccessModal(result.parentOrderId, result.createdOrders);
-    showToast(`🎉 訂單成功建立！母單編號：${result.parentOrderId}，已完成智慧拆單！`, "success", 5000);
-  }, 400);
+  })();
 }
 
 function openOrderSuccessModal(parentOrderId, createdOrders) {
@@ -1045,7 +1399,7 @@ function openOrderSuccessModal(parentOrderId, createdOrders) {
   }
   const pidEl = document.getElementById("success-parent-order-id");
   if (pidEl) pidEl.textContent = parentOrderId;
-  
+
   const listEl = document.getElementById("success-child-orders-list");
   if (listEl) {
     listEl.innerHTML = createdOrders.map(order => `
@@ -1093,7 +1447,7 @@ function formatTaiwanOrderTime(timeStr) {
   return timeStr;
 }
 
-function searchStudentOrders() {
+async function searchStudentOrders() {
   const studentId = document.getElementById("lookup-student-id").value.trim();
   const resultBox = document.getElementById("lookup-results-box");
 
@@ -1101,8 +1455,36 @@ function searchStudentOrders() {
     return showToast("請輸入要查詢的學生學號！", "error");
   }
 
-  const allOrders = ZgDataManager.getOrders();
-  const studentOrders = allOrders.filter(o => o.studentId === studentId);
+  let allOrders = ZgDataManager.getOrders();
+  let studentOrders = allOrders.filter(o => o.studentId === studentId);
+
+  // 若手機本地查無訂單，從 Supabase 雲端資料庫撈取並呈現在手機上
+  if (studentOrders.length === 0 && zgSupabaseClient) {
+    try {
+      const { data: cloudOrders, error } = await zgSupabaseClient
+        .from('orders')
+        .select('*')
+        .ilike('customer_name', `%${studentId}%`);
+
+      if (!error && cloudOrders && cloudOrders.length > 0) {
+        cloudOrders.forEach(co => {
+          studentOrders.push({
+            id: `CLOUD-${co.id}`,
+            productName: co.order_items || "客製化商品",
+            quantity: 1,
+            totalPrice: Number(co.total_price) || 0,
+            qcStatus: co.status === "待處理" ? "待審核" : (co.status || "待審核"),
+            prodStatus: "排單印製中",
+            deliveryStatus: "待配送",
+            paymentStatus: "未收款",
+            createdAt: co.created_at || getTaiwanNowString()
+          });
+        });
+      }
+    } catch (e) {
+      console.warn("Supabase 訂單查詢異常：", e);
+    }
+  }
 
   if (studentOrders.length === 0) {
     resultBox.innerHTML = `
@@ -1204,13 +1586,13 @@ function searchStudentOrders() {
 function openModal(modal) {
   if (!modal) return;
   modal.classList.add("active");
-  document.body.style.overflow = "hidden";
+  if (document.body) document.body.style.overflow = "hidden";
 }
 
 function closeModal(modal) {
   if (!modal) return;
   modal.classList.remove("active");
-  document.body.style.overflow = "";
+  if (document.body) document.body.style.overflow = "";
 }
 
 // ==========================================
@@ -1302,7 +1684,7 @@ function renderQuizQuestions() {
 function checkQuizAnswer(qIdx, optIdx, btn) {
   const item = QUIZ_QUESTIONS[qIdx];
   const expBox = document.getElementById(`q_${qIdx}_exp`);
-  
+
   // 鎖定該題按鈕
   for (let i = 0; i < item.options.length; i++) {
     const b = document.getElementById(`q_${qIdx}_opt_${i}`);
@@ -1320,7 +1702,7 @@ function checkQuizAnswer(qIdx, optIdx, btn) {
   } else {
     btn.classList.add("wrong");
     btn.querySelector(".quiz-feedback-mark").textContent = "✕ 不正確";
-    
+
     // 標亮正確答案
     const correctBtn = document.getElementById(`q_${qIdx}_opt_${item.ans}`);
     if (correctBtn) {
@@ -1341,11 +1723,14 @@ function checkQuizAnswer(qIdx, optIdx, btn) {
 // ==========================================
 let deferredPwaPrompt = null;
 
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPwaPrompt = e;
-  console.log('[PWA] 已捕捉到系統原生安裝事件');
-});
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPwaPrompt = e;
+    console.log('[PWA] 已捕捉到系統原生安裝事件');
+  });
+}
+
 
 function openAppDownloadModal() {
   const modal = document.getElementById("modal-app-download");
@@ -1353,7 +1738,7 @@ function openAppDownloadModal() {
   if (urlDisplay) {
     urlDisplay.textContent = window.location.href;
   }
-  
+
   // 智慧偵測：若用戶是 iOS 裝置 (iPhone/iPad/iPod)，自動切換至 iOS 分頁
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   if (isIOS) {
@@ -1480,7 +1865,8 @@ function setupEventListeners() {
 
   // 學生會員與個人資料修改表單
   document.getElementById("user-status-pill")?.addEventListener("click", openStudentAuthModal);
-  document.getElementById("form-student-auth")?.addEventListener("submit", saveStudentAuth);
+  document.getElementById("form-student-login")?.addEventListener("submit", handleStudentLogin);
+  document.getElementById("form-student-register")?.addEventListener("submit", handleStudentRegister);
   document.getElementById("form-student-profile")?.addEventListener("submit", handleSaveStudentProfile);
 
   // 客製工作室加入購物車
@@ -1535,3 +1921,50 @@ function setupEventListeners() {
     });
   });
 }
+
+// 確保所有 HTML 標籤內 inline onclick 事件函式均成功掛載至 window
+if (typeof window !== "undefined") {
+  window.handleMobNavHome = handleMobNavHome;
+  window.handleMobNavCategory = handleMobNavCategory;
+  window.openCartDrawer = openCartDrawer;
+  window.closeCartDrawer = closeCartDrawer;
+  window.openStudentAuthModal = openStudentAuthModal;
+  window.closeStudentAuthModal = closeStudentAuthModal;
+  window.switchAuthTab = switchAuthTab;
+  window.handleStudentLogin = handleStudentLogin;
+  window.handleStudentRegister = handleStudentRegister;
+  window.handleStudentLogout = handleStudentLogout;
+  window.openStudentProfileModal = openStudentProfileModal;
+  window.closeStudentProfileModal = closeStudentProfileModal;
+  window.handleSaveStudentProfile = handleSaveStudentProfile;
+  window.openOrderLookupModal = openOrderLookupModal;
+  window.searchStudentOrders = searchStudentOrders;
+  window.openDesignQuizModal = openDesignQuizModal;
+  window.openAppDownloadModal = openAppDownloadModal;
+  window.closeAppDownloadModal = closeAppDownloadModal;
+  window.switchAppTab = switchAppTab;
+  window.triggerPwaInstall = triggerPwaInstall;
+  window.copySiteUrl = copySiteUrl;
+  window.copyLanUrl = copyLanUrl;
+  window.startCheckoutProcess = startCheckoutProcess;
+  window.submitFinalOrder = submitFinalOrder;
+  window.openOrderSuccessModal = openOrderSuccessModal;
+  window.promptPreOrderNotice = promptPreOrderNotice;
+  window.confirmNoticeAndOpenStudio = confirmNoticeAndOpenStudio;
+  window.openProductDetailModal = openProductDetailModal;
+  window.openCustomStudio = openCustomStudio;
+  window.addToCartFromStudio = addToCartFromStudio;
+  window.toggleWishlistItem = toggleWishlistItem;
+  window.updateCartItemQty = updateCartItemQty;
+  window.removeCartItem = removeCartItem;
+  window.updateBackToTopButton = updateBackToTopButton;
+  window.scrollToTop = scrollToTop;
+  window.toggleFooterAccordion = toggleFooterAccordion;
+  window.handleNewsletterSubmit = handleNewsletterSubmit;
+  window.handleLanguageChange = handleLanguageChange;
+  window.handleCurrencyChange = handleCurrencyChange;
+  window.handleCategoryDropdownChange = handleCategoryDropdownChange;
+  window.checkRestockArrivalNotice = checkRestockArrivalNotice;
+  window.handleGoToCartAfterRestock = handleGoToCartAfterRestock;
+}
+
